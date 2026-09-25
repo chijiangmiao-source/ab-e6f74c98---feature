@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>束线保护双路径规划</title>
+<title>束线保护 · 双路径规划与接线复勘</title>
 <style>
   :root {
     --bg: #0f1420; --panel: #171e2e; --line: #2a3550; --text: #e8ecf5;
@@ -16,10 +16,10 @@
     font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
     line-height: 1.6;
   }
-  header { padding: 28px 24px 8px; max-width: 980px; margin: 0 auto; }
+  header { padding: 28px 24px 8px; max-width: 1060px; margin: 0 auto; }
   header h1 { font-size: 22px; margin: 0 0 6px; }
   header p { margin: 0; color: var(--muted); font-size: 14px; }
-  main { max-width: 980px; margin: 0 auto; padding: 16px 24px 48px; }
+  main { max-width: 1060px; margin: 0 auto; padding: 16px 24px 48px; }
   .panel {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; padding: 20px; margin-top: 16px;
@@ -41,17 +41,19 @@
   }
   td { padding: 6px 8px; border-bottom: 1px solid #1e2740; }
   td input { padding: 6px 8px; }
-  .toolbar { display: flex; gap: 12px; margin-top: 14px; }
+  .toolbar { display: flex; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
   button {
     border: none; border-radius: 8px; padding: 9px 18px; font-size: 14px;
     cursor: pointer; font-family: inherit;
   }
-  #add-row { background: var(--chip); color: var(--text); }
-  #submit { background: var(--accent); color: #fff; font-weight: 600; }
-  #submit:disabled { opacity: .55; cursor: wait; }
+  .add-row { background: var(--chip); color: var(--text); }
+  .submit-btn { background: var(--accent); color: #fff; font-weight: 600; }
+  .submit-btn:disabled { opacity: .55; cursor: wait; }
   .del-row { background: transparent; color: var(--muted); padding: 4px 8px; }
   .del-row:hover { color: var(--err); }
   h2 { font-size: 16px; margin: 0 0 12px; }
+  h3 { font-size: 14px; margin: 16px 0 6px; color: var(--text); }
+  .sub { color: var(--muted); font-size: 13px; margin: 2px 0 10px; }
   .badge {
     display: inline-block; font-size: 12px; padding: 2px 10px;
     border-radius: 999px; margin-bottom: 12px; font-weight: 600;
@@ -87,15 +89,37 @@
   .cut-nodes { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
   .note { color: var(--muted); font-size: 13px; margin-top: 12px; }
   .busy { color: var(--muted); font-size: 14px; }
+  .topo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 820px) { .topo-grid { grid-template-columns: 1fr; } }
+  .map-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 4px; }
+  .map-chip {
+    border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px;
+    font-size: 13px; background: #0d1320;
+  }
+  .map-chip.certain { border-color: rgba(52,201,142,.5); }
+  .map-chip.optional { border-color: rgba(240,164,74,.6); }
+  .map-chip .tag { font-size: 11px; margin-left: 6px; color: var(--muted); }
+  .map-chip.certain .tag { color: var(--ok); }
+  .map-chip.optional .tag { color: var(--warn); }
+  .opt-line { font-size: 13px; color: var(--warn); margin: 2px 0; }
+  .seg-table td, .seg-table th { font-size: 13px; }
+  .paired { color: var(--muted); }
+  .paired .arrow { padding: 0 4px; }
+  .lock-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; }
+  .lock-head { font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
 <header>
-  <h1>束线保护信号接入 · 双路径规划</h1>
-  <p>录入有向光纤段（允许节点重合与并行光纤），提交后求解起点到终点两条边互不重复、总延迟最小的保护链路。</p>
+  <h1>束线保护信号接入 · 双路径规划与接线复勘</h1>
+  <p>上：录入有向光纤段，求起点到终点两条边互不重复、总延迟最小的保护链路。
+     下：提交已批准拓扑与现场复勘拓扑（可锁定少量已确认代号），在全部满足锁定的一一映射中整体择优，
+     区分完全匹配、延迟录错与错接，绝不逐段就近猜测。</p>
 </header>
 <main>
-  <section class="panel">
+  <!-- ================= 原有：双路径规划 ================= -->
+  <section class="panel" id="planner-panel">
+    <h2>双路径规划</h2>
     <div class="endpoints">
       <div><label>起点</label><input id="source" value="S" autocomplete="off"></div>
       <div><label>终点</label><input id="target" value="T" autocomplete="off"></div>
@@ -107,18 +131,62 @@
       <tbody id="seg-body"></tbody>
     </table>
     <div class="toolbar">
-      <button id="add-row" type="button">+ 添加光纤段</button>
-      <button id="submit" type="button">提交求解</button>
+      <button id="add-row" class="add-row" type="button">+ 添加光纤段</button>
+      <button id="submit" class="submit-btn" type="button">提交求解</button>
     </div>
   </section>
   <section id="result" class="panel hidden"></section>
+
+  <!-- ================= 新增：接线复勘 ================= -->
+  <section class="panel">
+    <h2>接线复勘 · 代号对应核对</h2>
+    <p class="sub">两份拓扑均允许并行段；每份端点 2–11 个、段数不超过 24，延迟为非负整数。
+      先在所有满足锁定的一一映射中最大化「方向与延迟均相同」的配对段数，
+      再最小化其余同向段的延迟绝对差之和，最后按代号序列稳定取结论。</p>
+    <div class="topo-grid">
+      <div>
+        <h3>已批准拓扑（原节点名）</h3>
+        <table class="seg-table">
+          <thead><tr><th>段标识</th><th>起点</th><th>终点</th><th>延迟</th><th></th></tr></thead>
+          <tbody id="approved-body"></tbody>
+        </table>
+        <div class="toolbar"><button id="add-approved" class="add-row" type="button">+ 添加批准段</button></div>
+      </div>
+      <div>
+        <h3>复勘拓扑（现场临时代号）</h3>
+        <table class="seg-table">
+          <thead><tr><th>段标识</th><th>代号起点</th><th>代号终点</th><th>延迟</th><th></th></tr></thead>
+          <tbody id="survey-body"></tbody>
+        </table>
+        <div class="toolbar"><button id="add-survey" class="add-row" type="button">+ 添加复勘段</button></div>
+      </div>
+    </div>
+
+    <h3>已确认锁定（可空）</h3>
+    <div class="lock-grid">
+      <span class="lock-head">复勘代号</span><span class="lock-head">对应原节点</span><span></span>
+    </div>
+    <div id="lock-rows"></div>
+    <div class="toolbar">
+      <button id="add-lock" class="add-row" type="button">+ 添加锁定</button>
+      <button id="submit-reconcile" class="submit-btn" type="button">提交复勘</button>
+    </div>
+  </section>
+  <section id="reconcile-result" class="panel hidden"></section>
 </main>
 
 <script>
 "use strict";
 
-// 示例草稿：局部最短路 S-A-B-T 占用共享光纤 e2，
-// "先最短路再删边"会误判无可行双路；全局最优为 S-A-T 与 S-B-T，总延迟 12。
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+/* =====================================================================
+ * 一、双路径规划（原有功能，保持不变）
+ * ===================================================================== */
 const SAMPLE = [
   { id: "e1", from: "S", to: "A", delay: 1 },
   { id: "e2", from: "A", to: "B", delay: 1 },
@@ -131,15 +199,8 @@ const segBody = document.getElementById("seg-body");
 const resultPanel = document.getElementById("result");
 const submitBtn = document.getElementById("submit");
 
-// 请求序号 + 中止控制器：过期响应不得覆盖新草稿。
 let requestSeq = 0;
 let inflight = null;
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
 
 function addRow(seg) {
   const tr = document.createElement("tr");
@@ -171,7 +232,6 @@ function collectPayload() {
       id: val("id"),
       from: val("from"),
       to: val("to"),
-      // 原样上送：非法延迟由服务端定位报错，不在前端掩盖。
       delay: /^-?\d+$/.test(rawDelay) ? parseInt(rawDelay, 10) : rawDelay,
     });
   }
@@ -186,31 +246,26 @@ function clearResult() {
   resultPanel.classList.add("hidden");
   resultPanel.innerHTML = "";
 }
-
 function showBusy() {
   resultPanel.classList.remove("hidden");
   resultPanel.innerHTML = '<p class="busy">求解中…</p>';
 }
-
 function showErrors(errors) {
-  // 出错时清除旧结论，仅展示本次定位错误。
   resultPanel.classList.remove("hidden");
   const items = (errors && errors.length ? errors : [{ loc: "-", message: "未知错误" }])
     .map((e) => `<div class="err-item"><code>${escapeHtml(e.loc)}</code>：${escapeHtml(e.message)}</div>`)
     .join("");
   resultPanel.innerHTML = `<span class="badge err">输入有误，旧结论已清除</span>${items}`;
 }
-
 function chainHtml(segments, start) {
   let html = `<span class="node">${escapeHtml(start)}</span>`;
-  for (const s of segments) {
+  for ( const s of segments) {
     html +=
       `<span class="seg-chip"><b>${escapeHtml(s.id)}</b> · 延迟 ${escapeHtml(s.delay)}</span>` +
       `<span class="arrow">→</span><span class="node">${escapeHtml(s.to)}</span>`;
   }
   return html;
 }
-
 function showPaths(data) {
   const blocks = data.paths.map((p, i) => {
     const terms = p.segments.map((s) => s.delay).join(" + ");
@@ -226,7 +281,6 @@ function showPaths(data) {
     ${blocks}
     <div class="total">最小总延迟：<b>${data.totalDelay}</b> <span class="calc">（${sum} = ${data.totalDelay}）</span></div>`;
 }
-
 function showCut(data) {
   const nodes = data.cut.sourceSet.map((n) => `<span class="node">${escapeHtml(n)}</span>`).join("");
   const rows = data.cut.edges.map((e) =>
@@ -242,13 +296,12 @@ function showCut(data) {
     <tbody>${rows}</tbody></table>
     <p class="note">${escapeHtml(data.message || "")}</p>`;
 }
-
 async function submit() {
-  if (inflight) inflight.abort();          // 取消上一个未完成的请求
+  if (inflight) inflight.abort();
   const ctrl = new AbortController();
   inflight = ctrl;
-  const seq = ++requestSeq;                // 过期响应一律丢弃
-  clearResult();                           // 新草稿提交，清除旧结论
+  const seq = ++requestSeq;
+  clearResult();
   showBusy();
   submitBtn.disabled = true;
   try {
@@ -259,25 +312,243 @@ async function submit() {
       signal: ctrl.signal,
     });
     const data = await resp.json();
-    if (seq !== requestSeq) return;        // 已有更新的草稿/请求
+    if (seq !== requestSeq) return;
     if (!resp.ok) { showErrors(data.errors); return; }
     if (data.status === "ok") showPaths(data);
     else showCut(data);
   } catch (err) {
-    if (err.name === "AbortError") return; // 被新请求取代，属正常
+    if (err.name === "AbortError") return;
     if (seq !== requestSeq) return;
     showErrors([{ loc: "network", message: "请求失败：" + err.message }]);
   } finally {
     if (seq === requestSeq) submitBtn.disabled = false;
   }
 }
-
 document.getElementById("add-row").addEventListener("click", () => addRow());
 submitBtn.addEventListener("click", submit);
-// 任何编辑都使旧结论失效（清除旧结论，避免误导）。
-document.querySelector("main").addEventListener("input", clearResult);
-
+// 仅双路规划区的编辑清除其旧结论（复勘区的输入不得影响双路结论）。
+document.getElementById("planner-panel").addEventListener("input", clearResult);
 SAMPLE.forEach(addRow);
+
+/* =====================================================================
+ * 二、接线复勘（新增）
+ * ===================================================================== */
+
+// 局部贪心反例示例：延迟全为 3 时，逐段就近会把 y 当成 B，
+// 只有整体映射 x=A、z=B、y=C 才能让三段全部完全匹配。
+const APPROVED_SAMPLE = [
+  { id: "a1", from: "A", to: "B", delay: 3 },
+  { id: "a2", from: "B", to: "C", delay: 3 },
+  { id: "a3", from: "A", to: "C", delay: 3 },
+];
+const SURVEY_SAMPLE = [
+  { id: "f1", from: "x", to: "y", delay: 3 },
+  { id: "f2", from: "z", to: "y", delay: 3 },
+  { id: "f3", from: "x", to: "z", delay: 3 },
+];
+
+const approvedBody = document.getElementById("approved-body");
+const surveyBody = document.getElementById("survey-body");
+const lockRows = document.getElementById("lock-rows");
+const reconcilePanel = document.getElementById("reconcile-result");
+const reconcileBtn = document.getElementById("submit-reconcile");
+
+let reconcileSeq = 0;
+let reconcileInflight = null;
+
+function makeSegRow(body, seg, phFrom, phTo) {
+  const tr = document.createElement("tr");
+  tr.innerHTML =
+    '<td><input data-f="id" autocomplete="off"></td>' +
+    `<td><input data-f="from" placeholder="${phFrom}" autocomplete="off"></td>` +
+    `<td><input data-f="to" placeholder="${phTo}" autocomplete="off"></td>` +
+    '<td><input data-f="delay" inputmode="numeric" autocomplete="off"></td>' +
+    '<td><button type="button" class="del-row" title="删除">✕</button></td>';
+  if (seg) {
+    tr.querySelector('[data-f="id"]').value = seg.id;
+    tr.querySelector('[data-f="from"]').value = seg.from;
+    tr.querySelector('[data-f="to"]').value = seg.to;
+    tr.querySelector('[data-f="delay"]').value = seg.delay;
+  }
+  tr.querySelector(".del-row").addEventListener("click", () => {
+    tr.remove();
+    clearReconcileResult();
+  });
+  body.appendChild(tr);
+}
+
+function addApproved(seg) {
+  makeSegRow(approvedBody, seg, "原节点", "原节点");
+}
+function addSurvey(seg) {
+  makeSegRow(surveyBody, seg, "代号", "代号");
+}
+
+function addLockRow(code = "", node = "") {
+  const div = document.createElement("div");
+  div.className = "lock-grid";
+  div.style.marginTop = "8px";
+  div.innerHTML =
+    '<input data-l="code" placeholder="复勘代号，如 x" autocomplete="off">' +
+    '<input data-l="node" placeholder="已批准原节点，如 A" autocomplete="off">' +
+    '<button type="button" class="del-row" title="删除锁定">✕</button>';
+  div.querySelector('[data-l="code"]').value = code;
+  div.querySelector('[data-l="node"]').value = node;
+  div.querySelector(".del-row").addEventListener("click", () => {
+    div.remove();
+    clearReconcileResult();
+  });
+  div.addEventListener("input", clearReconcileResult);
+  lockRows.appendChild(div);
+}
+
+function collectTopology(body) {
+  const segments = [];
+  for (const tr of body.querySelectorAll("tr")) {
+    const val = (f) => tr.querySelector(`[data-f="${f}"]`).value.trim();
+    const rawDelay = val("delay");
+    segments.push({
+      id: val("id"),
+      from: val("from"),
+      to: val("to"),
+      delay: /^-?\d+$/.test(rawDelay) ? parseInt(rawDelay, 10) : rawDelay,
+    });
+  }
+  return segments;
+}
+
+function collectLocks() {
+  const locks = [];
+  for (const div of lockRows.querySelectorAll(".lock-grid")) {
+    const code = div.querySelector('[data-l="code"]').value.trim();
+    const node = div.querySelector('[data-l="node"]').value.trim();
+    if (code || node) locks.push({ code, node });
+  }
+  return locks;
+}
+
+function clearReconcileResult() {
+  reconcilePanel.classList.add("hidden");
+  reconcilePanel.innerHTML = "";
+}
+
+function segRefHtml(s) {
+  return `<b>${escapeHtml(s.id)}</b> ${escapeHtml(s.from)} → ${escapeHtml(s.to)} · 延迟 ${escapeHtml(s.delay)}`;
+}
+
+function segTable(segments) {
+  if (!segments.length) return '<p class="sub">（无）</p>';
+  const rows = segments.map((s) =>
+    `<tr><td>${escapeHtml(s.id)}</td><td>${escapeHtml(s.from)}</td>` +
+    `<td>${escapeHtml(s.to)}</td><td>${escapeHtml(s.delay)}</td></tr>`
+  ).join("");
+  return '<table class="seg-table"><thead><tr><th>段标识</th><th>起点</th><th>终点</th><th>延迟</th></tr></thead>' +
+    `<tbody>${rows}</tbody></table>`;
+}
+
+function showReconcile(data) {
+  // 规范映射（按代号排序），标注必然/可选。
+  const optionalMap = {};
+  for (const o of data.optional) optionalMap[o.code] = o.nodes;
+  const chips = data.mapping.map((m) => {
+    const opts = optionalMap[m.code];
+    const cls = opts ? "optional" : "certain";
+    const tag = opts ? "可选" : "必然";
+    return `<span class="map-chip ${cls}">${escapeHtml(m.code)} ` +
+      `<span class="arrow">→</span> <b>${escapeHtml(m.node)}</b>` +
+      `<span class="tag">${tag}</span></span>`;
+  }).join("");
+
+  const optLines = data.optional.map((o) =>
+    `<div class="opt-line">代号 <b>${escapeHtml(o.code)}</b> 在 ${data.mappingCount} 个同优映射中可对应：` +
+    o.nodes.map((x) => `<span class="node">${escapeHtml(x)}</span>`).join(" ") +
+    "</div>"
+  ).join("");
+
+  const exactRows = data.exactMatches.map((m) =>
+    `<tr><td class="paired">${segRefHtml(m.approved)}</td>` +
+    `<td class="paired">${segRefHtml(m.survey)}</td><td>0</td></tr>`
+  ).join("");
+  const diffRows = data.delayMismatches.map((m) =>
+    `<tr><td class="paired">${segRefHtml(m.approved)}</td>` +
+    `<td class="paired">${segRefHtml(m.survey)}</td>` +
+    `<td><b>${escapeHtml(m.delayDiff)}</b></td></tr>`
+  ).join("");
+
+  reconcilePanel.classList.remove("hidden");
+  reconcilePanel.innerHTML =
+    `<span class="badge ok">复勘结论（本次提交有效，旧结论已替换）</span>
+    <h2>规范映射</h2>
+    <div class="map-row">${chips}</div>
+    <p class="sub">全部同优映射数：<b>${data.mappingCount}</b>
+      （按复勘代号排序后的目标节点序列字典序最小者作为规范映射）</p>
+    ${optLines}
+    <h3>① 完全匹配段（方向与延迟均相同，共 ${data.exactCount} 段）</h3>
+    <table class="seg-table"><thead><tr><th>已批准段</th><th>复勘段</th><th>|Δ|</th></tr></thead>
+      <tbody>${exactRows || '<tr><td colspan="3" class="sub">（无）</td></tr>'}</tbody></table>
+    <h3>② 延迟不一致段（方向正确、仅延迟录错，|Δ| 之和 = ${data.delayCost}）</h3>
+    <table class="seg-table"><thead><tr><th>已批准段</th><th>复勘段</th><th>|Δ|</th></tr></thead>
+      <tbody>${diffRows || '<tr><td colspan="3" class="sub">（无）</td></tr>'}</tbody></table>
+    <h3>③ 未匹配段（错接 / 多出或缺失，不参与配对）</h3>
+    <div class="topo-grid">
+      <div><label>已批准侧未匹配（${data.unmatchedApproved.length}）</label>${segTable(data.unmatchedApproved)}</div>
+      <div><label>复勘侧未匹配（${data.unmatchedSurvey.length}）</label>${segTable(data.unmatchedSurvey)}</div>
+    </div>`;
+}
+
+function showReconcileErrors(errors) {
+  // 无可行锁定 / 重复标识 / 端点集合不相等：定位反馈并清除本次结论。
+  reconcilePanel.classList.remove("hidden");
+  const items = (errors && errors.length ? errors : [{ loc: "-", message: "未知错误" }])
+    .map((e) => `<div class="err-item"><code>${escapeHtml(e.loc)}</code>：${escapeHtml(e.message)}</div>`)
+    .join("");
+  reconcilePanel.innerHTML =
+    `<span class="badge err">复勘输入有误，本次结论已清除</span>${items}`;
+}
+
+async function submitReconcile() {
+  if (reconcileInflight) reconcileInflight.abort();
+  const ctrl = new AbortController();
+  reconcileInflight = ctrl;
+  const seq = ++reconcileSeq;              // 过期响应不覆盖新草稿
+  clearReconcileResult();
+  reconcilePanel.classList.remove("hidden");
+  reconcilePanel.innerHTML = '<p class="busy">复勘求解中…</p>';
+  reconcileBtn.disabled = true;
+  try {
+    const resp = await fetch("/api/reconcile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        approved: collectTopology(approvedBody),
+        survey: collectTopology(surveyBody),
+        locks: collectLocks(),
+      }),
+      signal: ctrl.signal,
+    });
+    const data = await resp.json();
+    if (seq !== reconcileSeq) return;
+    if (!resp.ok) { showReconcileErrors(data.errors); return; }
+    showReconcile(data);
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    if (seq !== reconcileSeq) return;
+    showReconcileErrors([{ loc: "network", message: "请求失败：" + err.message }]);
+  } finally {
+    if (seq === reconcileSeq) reconcileBtn.disabled = false;
+  }
+}
+
+document.getElementById("add-approved").addEventListener("click", () => addApproved());
+document.getElementById("add-survey").addEventListener("click", () => addSurvey());
+document.getElementById("add-lock").addEventListener("click", () => addLockRow());
+reconcileBtn.addEventListener("click", submitReconcile);
+// 复勘区任何编辑都使旧结论失效。
+document.getElementById("reconcile-result").previousElementSibling
+  .addEventListener("input", clearReconcileResult);
+
+APPROVED_SAMPLE.forEach(addApproved);
+SURVEY_SAMPLE.forEach(addSurvey);
 </script>
 </body>
 </html>

@@ -1,0 +1,9 @@
+{
+  "name": "fiber-protection-page-verify",
+  "private": true,
+  "type": "module",
+  "description": "接线复勘页面的真实 DOM 验收（jsdom 驱动，结论只来自真实接口）",
+  "dependencies": {
+    "jsdom": "25.0.1"
+  }
+}

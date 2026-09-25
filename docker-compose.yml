@@ -26,3 +26,18 @@ services:
     depends_on:
       app:
         condition: service_healthy
+
+  # 页面验收：jsdom 驱动真实页面，结论只来自运行中的 app 的真实接口。
+  # 依赖 verify（接口验收）成功完成，故一条命令即可顺序跑「接口 + 页面」：
+  #   docker compose up --build --abort-on-container-exit --exit-code-from verify-web
+  verify-web:
+    build:
+      context: .
+      dockerfile: verify/page/Dockerfile
+    environment:
+      APP_URL: "http://app:8080"
+    depends_on:
+      app:
+        condition: service_healthy
+      verify:
+        condition: service_completed_successfully
