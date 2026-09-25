@@ -1,4 +1,4 @@
-"""束线保护双路径规划服务：健康入口 + 求解接口 + 静态页面。"""
+"""束线保护双路径规划 / 接线复勘服务：健康入口 + 求解接口 + 静态页面。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,6 +7,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .recheck import reconcile
+from .recheck_validation import validate_recheck_payload
 from .solver import Segment, solve_two_paths
 from .validation import validate_payload
 
@@ -69,6 +71,61 @@ async def protected_paths(request: Request):
                 "segments": [_segment_json(seg) for seg in path.segments],
             }
             for path in result.paths
+        ],
+    }
+
+
+def _recheck_segment_json(seg: Segment) -> dict:
+    return {"id": seg.id, "from": seg.src, "to": seg.dst, "delay": seg.delay}
+
+
+@app.post("/api/recheck")
+async def recheck_topology(request: Request):
+    """接线复勘：在满足锁定的所有一一映射中选全局最优代号对应关系。"""
+    try:
+        data = await request.json()
+    except Exception:
+        return _error_response("body", "请求体不是合法 JSON")
+
+    parsed, errors = validate_recheck_payload(data)
+    if errors:
+        return JSONResponse(status_code=400, content={"errors": errors})
+    approved, recheck_segments, locks = parsed
+
+    conclusion = reconcile(approved, recheck_segments, locks)
+
+    return {
+        "status": "ok",
+        "mapping": [
+            {"code": code, "target": target} for code, target in conclusion.mapping
+        ],
+        "certainty": conclusion.certainty,
+        "options": conclusion.options,
+        "optimalCount": conclusion.optimal_count,
+        "metrics": {
+            "exactCount": conclusion.exact_count,
+            "delayDiffSum": conclusion.delay_diff_sum,
+        },
+        "exactPairs": [
+            {
+                "recheck": _recheck_segment_json(p.recheck),
+                "approved": _recheck_segment_json(p.approved),
+            }
+            for p in conclusion.exact_pairs
+        ],
+        "delayMismatches": [
+            {
+                "recheck": _recheck_segment_json(m.recheck),
+                "approved": _recheck_segment_json(m.approved),
+                "diff": m.diff,
+            }
+            for m in conclusion.mismatch_pairs
+        ],
+        "unmatchedRecheck": [
+            _recheck_segment_json(s) for s in conclusion.unmatched_recheck
+        ],
+        "unmatchedApproved": [
+            _recheck_segment_json(s) for s in conclusion.unmatched_approved
         ],
     }
 

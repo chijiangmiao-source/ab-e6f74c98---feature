@@ -6,7 +6,12 @@
      两条路径边互不重复、链路连续、总延迟可复算；
   3. 共享瓶颈：返回源侧节点集合与**全部**外出割边，并独立验证割的容量与阻断性；
   4. 负延迟/重复段标识/不存在端点/不可达均定位报错；
-  5. 并行光纤与零延迟；静态页面可访问。
+  5. 并行光纤与零延迟；静态页面可访问；
+  6. 接线复勘：
+     - 对称歧义：同优映射数与每代号可选目标由独立全枚举复核；
+     - 局部贪心误配反例：逐段就近锁死诱饵只得 1 段，全局得 5 段；
+     - 锁定冲突 / 重复标识 / 端点集合不等均 400 且定位；
+     - 旧双路规划接口与页面行为回归。
 
 任何一项失败即以非零退出码退出。
 """
@@ -299,6 +304,306 @@ def verify_parallel_and_page(base_url: str) -> None:
           "requestSeq" in html and "AbortController" in html)
     check("页面在出错/编辑时清除旧结论",
           "clearResult" in html and "旧结论已清除" in html)
+    # 复勘页面元素回归
+    check("页面含接线复勘面板与 /api/recheck 调用",
+          "接线复勘" in html and "/api/recheck" in html)
+    check("复勘页展示规范映射/完全匹配/延迟不一致/未匹配分区",
+          all(k in html for k in
+              ["规范映射", "完全匹配段", "延迟不一致段", "未匹配的复勘段"]))
+    check("复勘页同样有过期请求防护与结论清除",
+          "rcSeq" in html and "本次结论已清除" in html)
+
+
+# ===================== 接线复勘验收 =====================
+
+# 全同延迟完全二部图：源侧 {S,T}、汇侧 {A,B}，真实代号对应存在
+# 2! x 2! = 4 个同优映射。
+SYM_APPROVED = [
+    {"id": "a1", "from": "S", "to": "A", "delay": 1},
+    {"id": "a2", "from": "S", "to": "B", "delay": 1},
+    {"id": "a3", "from": "T", "to": "A", "delay": 1},
+    {"id": "a4", "from": "T", "to": "B", "delay": 1},
+]
+SYM_RECHECK = [
+    {"id": "r1", "from": "p", "to": "q", "delay": 1},
+    {"id": "r2", "from": "p", "to": "r", "delay": 1},
+    {"id": "r3", "from": "s", "to": "q", "delay": 1},
+    {"id": "r4", "from": "s", "to": "r", "delay": 1},
+]
+
+# 局部贪心误配反例：首段 r0=(c1,c2,1) 的唯一零延迟诱饵是 a4=(v2,v0,1)，
+# 逐段就近先配它后，任何全局双射都只能救回 1 段；全局 QAP 得 5 段。
+GREEDY_RECHECK_APPROVED = [
+    {"id": "a0", "from": "v3", "to": "v1", "delay": 2},
+    {"id": "a1", "from": "v3", "to": "v2", "delay": 2},
+    {"id": "a2", "from": "v1", "to": "v0", "delay": 3},
+    {"id": "a3", "from": "v2", "to": "v3", "delay": 0},
+    {"id": "a4", "from": "v2", "to": "v0", "delay": 1},
+    {"id": "a5", "from": "v3", "to": "v0", "delay": 2},
+]
+GREEDY_RECHECK_RECHECK = [
+    {"id": "r0", "from": "c1", "to": "c2", "delay": 1},
+    {"id": "r1", "from": "c1", "to": "c0", "delay": 2},
+    {"id": "r2", "from": "c2", "to": "c3", "delay": 3},
+    {"id": "r3", "from": "c0", "to": "c1", "delay": 0},
+    {"id": "r4", "from": "c0", "to": "c3", "delay": 1},
+    {"id": "r5", "from": "c1", "to": "c3", "delay": 2},
+]
+
+
+def recheck_request(base_url: str, approved, recheck, locks=None):
+    body = {
+        "approvedSegments": approved,
+        "recheckSegments": recheck,
+        "locks": locks or [],
+    }
+    raw = json.dumps(body).encode()
+    req = urllib.request.Request(
+        base_url + "/api/recheck", data=raw,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode())
+
+
+def independent_recheck_score(approved, recheck, mp):
+    """独立计算某双射 mp（代号->原节点）下的 (完全匹配数, 延迟差之和)。
+
+    每个有向端点对上：同延迟先配满；剩余两侧按延迟排序配残差段，
+    多者留下（未匹配，不扣分）。
+    """
+    from collections import Counter as _Counter
+    ac = {}
+    for s in approved:
+        ac.setdefault((s["from"], s["to"]), _Counter())[s["delay"]] += 1
+    rc = {}
+    for s in recheck:
+        rc.setdefault((mp[s["from"]], mp[s["to"]]), _Counter())[s["delay"]] += 1
+    exact = diff = 0
+    for key in set(ac) | set(rc):
+        a, r = ac.get(key, _Counter()), rc.get(key, _Counter())
+        ra, rr = [], []
+        for d in set(a) | set(r):
+            ca, cr = a.get(d, 0), r.get(d, 0)
+            exact += min(ca, cr)
+            if ca > cr:
+                ra += [d] * (ca - cr)
+            elif cr > ca:
+                rr += [d] * (cr - ca)
+        ra.sort()
+        rr.sort()
+        diff += sum(abs(x - y) for x, y in zip(ra, rr))
+    return exact, diff
+
+
+def enumerate_recheck_optima(approved, recheck, locks=None):
+    """独立全枚举：满足锁定的全部双射，返回最优键/同优数/每代号可选目标。"""
+    anodes = sorted({n for s in approved for n in (s["from"], s["to"])})
+    rnodes = sorted({n for s in recheck for n in (s["from"], s["to"])})
+    locks = locks or {}
+    best_key = None
+    count = 0
+    options = {c: set() for c in rnodes}
+    for perm in itertools.permutations(anodes):
+        mp = dict(zip(rnodes, perm))
+        if any(mp.get(c) != t for c, t in locks.items()):
+            continue
+        exact, diff = independent_recheck_score(approved, recheck, mp)
+        key = (exact, -diff)
+        if best_key is None or key > best_key:
+            best_key = key
+            count = 1
+            options = {c: {mp[c]} for c in rnodes}
+        elif key == best_key:
+            count += 1
+            for c in rnodes:
+                options[c].add(mp[c])
+    return best_key, count, options
+
+
+def verify_recheck_symmetry(base_url: str) -> None:
+    print("\n== 5. 复勘对称歧义：同优映射数与可选目标（独立全枚举对拍） ==")
+    status, data = recheck_request(base_url, SYM_APPROVED, SYM_RECHECK)
+    check("复勘 HTTP 200", status == 200, str(data))
+    check("四段完全匹配", data.get("metrics", {}).get("exactCount") == 4, str(data))
+    check("无延迟不一致", data.get("metrics", {}).get("delayDiffSum") == 0, str(data))
+
+    best_key, count, options = enumerate_recheck_optima(
+        SYM_APPROVED, SYM_RECHECK
+    )
+    check("同优映射数 = 4（接口）", data.get("optimalCount") == 4, str(data.get("optimalCount")))
+    check("同优映射数与独立枚举一致", data.get("optimalCount") == count, str(count))
+    check("接口最优键与独立枚举一致",
+          (data["metrics"]["exactCount"], -data["metrics"]["delayDiffSum"]) == best_key)
+    # 每个代号的必然/可选目标与枚举一致
+    for code, targets in options.items():
+        got = set(data.get("options", {}).get(code, []))
+        check(f"代号 {code} 可选目标与枚举一致 {sorted(targets)}", got == targets,
+              f"got {sorted(got)}")
+    expect_cert = "optional" if count > 1 else "fixed"
+    check("全部代号标记为可选",
+          all(v == expect_cert for v in data["certainty"].values()),
+          str(data["certainty"]))
+    # 规范映射稳定：按代号排序的目标序列为字典序最小最优序列
+    seq = [m["target"] for m in data["mapping"]]
+    codes = [m["code"] for m in data["mapping"]]
+    check("规范映射按代号排序", codes == sorted(codes))
+    anodes = sorted({n for s in SYM_APPROVED for n in (s["from"], s["to"])})
+    min_seq = None
+    rnodes = sorted({n for s in SYM_RECHECK for n in (s["from"], s["to"])})
+    for perm in itertools.permutations(anodes):
+        mp = dict(zip(rnodes, perm))
+        e, d = independent_recheck_score(SYM_APPROVED, SYM_RECHECK, mp)
+        if (e, -d) == best_key:
+            cand = [mp[c] for c in rnodes]
+            if min_seq is None or cand < min_seq:
+                min_seq = cand
+    check("规范目标序列字典序最小", seq == min_seq, f"{seq} vs {min_seq}")
+
+    # 锁定一个代号消歧：q=B 后同优数降为 2
+    status2, data2 = recheck_request(
+        base_url, SYM_APPROVED, SYM_RECHECK, [{"code": "q", "target": "B"}]
+    )
+    _, count_locked, _ = enumerate_recheck_optima(
+        SYM_APPROVED, SYM_RECHECK, {"q": "B"}
+    )
+    check("锁定后 HTTP 200", status2 == 200, str(data2))
+    check("锁定 q=B 被遵守",
+          dict((m["code"], m["target"]) for m in data2["mapping"])["q"] == "B")
+    check("锁定后同优数 = 2（与枚举一致）",
+          data2.get("optimalCount") == count_locked == 2,
+          f"{data2.get('optimalCount')} vs {count_locked}")
+    check("被锁定代号标记必然", data2["certainty"]["q"] == "fixed")
+
+
+def verify_recheck_greedy_counterexample(base_url: str) -> None:
+    print("\n== 6. 复勘局部贪心误配反例（不得逐段匹配后拼接） ==")
+    status, data = recheck_request(
+        base_url, GREEDY_RECHECK_APPROVED, GREEDY_RECHECK_RECHECK
+    )
+    check("HTTP 200", status == 200, str(data))
+    exact = data.get("metrics", {}).get("exactCount")
+    diff = data.get("metrics", {}).get("delayDiffSum")
+    check("全局完全匹配段数 = 5", exact == 5, str(data.get("metrics")))
+    check("其余同向段延迟差之和 = 1", diff == 1, str(diff))
+    # 独立枚举复核最优值
+    best_key, count, _ = enumerate_recheck_optima(
+        GREEDY_RECHECK_APPROVED, GREEDY_RECHECK_RECHECK
+    )
+    check("独立枚举确认 (5, -1) 为全局最优", best_key == (5, -1), str(best_key))
+    check("同优映射数与枚举一致", data.get("optimalCount") == count, str(count))
+
+    # 模拟"逐段就近"：把首段唯一最近诱饵 (c1,c2)->(v2,v0) 锁死
+    status2, greedy = recheck_request(
+        base_url, GREEDY_RECHECK_APPROVED, GREEDY_RECHECK_RECHECK,
+        [{"code": "c1", "target": "v2"}, {"code": "c2", "target": "v0"}],
+    )
+    check("锁定诱饵对应后仍 200", status2 == 200, str(greedy))
+    g_exact = greedy.get("metrics", {}).get("exactCount")
+    check("逐段贪心诱饵锁死后只得 1 段全匹配", g_exact == 1, str(g_exact))
+    check("全局结论严格优于逐段贪心", exact > g_exact, f"{exact} > {g_exact}")
+
+    # 结论分区齐全：1 条延迟不一致，无未匹配（6 对 6）
+    check("延迟不一致段 1 条", len(data.get("delayMismatches", [])) == 1,
+          str(data.get("delayMismatches")))
+    check("两侧均无未匹配段",
+          data.get("unmatchedRecheck") == [] and data.get("unmatchedApproved") == [])
+    mm = data["delayMismatches"][0]
+    check("延迟差可复算 = 1",
+          abs(mm["recheck"]["delay"] - mm["approved"]["delay"]) == mm["diff"] == 1)
+
+
+def verify_recheck_errors(base_url: str) -> None:
+    print("\n== 7. 复勘锁定冲突 / 重复标识 / 端点集合不等 ==")
+    # 两个代号锁同一目标：无可行锁定
+    conflict = {
+        "approvedSegments": [
+            {"id": "a1", "from": "S", "to": "A", "delay": 1},
+            {"id": "a2", "from": "A", "to": "T", "delay": 1},
+        ],
+        "recheckSegments": [
+            {"id": "r1", "from": "p", "to": "q", "delay": 1},
+            {"id": "r2", "from": "q", "to": "s", "delay": 1},
+        ],
+        "locks": [
+            {"code": "p", "target": "S"},
+            {"code": "s", "target": "S"},
+        ],
+    }
+    status, data = recheck_request(
+        base_url, conflict["approvedSegments"],
+        conflict["recheckSegments"], conflict["locks"],
+    )
+    check("锁定冲突返回 400", status == 400, str(status))
+    check("锁定冲突定位到 locks[1].target",
+          any(e["loc"] == "locks[1].target" for e in data.get("errors", [])),
+          str(data))
+
+    # 重复段标识
+    dup_app = [
+        {"id": "x", "from": "S", "to": "A", "delay": 1},
+        {"id": "x", "from": "A", "to": "T", "delay": 1},
+    ]
+    rc = [
+        {"id": "r1", "from": "p", "to": "q", "delay": 1},
+        {"id": "r2", "from": "q", "to": "s", "delay": 1},
+    ]
+    status, data = recheck_request(base_url, dup_app, rc)
+    check("复勘重复段标识返回 400", status == 400)
+    check("重复标识定位到 approvedSegments[1].id",
+          any(e["loc"] == "approvedSegments[1].id" for e in data.get("errors", [])),
+          str(data))
+
+    # 端点集合不相等（数目不等）
+    app = [
+        {"id": "a1", "from": "S", "to": "A", "delay": 1},
+        {"id": "a2", "from": "A", "to": "T", "delay": 1},
+    ]
+    rc3 = [
+        {"id": "r1", "from": "p", "to": "q", "delay": 1},
+        {"id": "r2", "from": "q", "to": "s", "delay": 1},
+        {"id": "r3", "from": "s", "to": "z", "delay": 1},
+    ]
+    status, data = recheck_request(base_url, app, rc3)
+    check("端点集合不等返回 400", status == 400)
+    check("端点集合不等定位到 recheckSegments",
+          any(e["loc"] == "recheckSegments" for e in data.get("errors", [])),
+          str(data))
+
+    # 锁定未知代号 / 未知目标
+    status, data = recheck_request(
+        base_url, app, rc[:2], [{"code": "zz", "target": "S"}]
+    )
+    check("未知锁定代号 400", status == 400)
+    check("未知代号定位到 locks[0].code",
+          any(e["loc"] == "locks[0].code" for e in data.get("errors", [])))
+    status, data = recheck_request(
+        base_url, app, rc[:2], [{"code": "p", "target": "ZZ"}]
+    )
+    check("未知锁定目标 400 且定位", status == 400 and
+          any(e["loc"] == "locks[0].target" for e in data.get("errors", [])))
+
+    # 出错时接口不应返回任何结论字段
+    check("错误响应清除本次结论（无 mapping 字段）",
+          "mapping" not in data and "optimalCount" not in data)
+
+
+def verify_old_api_regression(base_url: str) -> None:
+    print("\n== 8. 旧双路规划接口与页面回归 ==")
+    # 原有接口路径、请求体、字段保持不变
+    status, data = request(base_url, GREEDY_CASE)
+    check("旧接口 /api/protected-paths 仍 200", status == 200)
+    check("旧接口总延迟仍为 12", data.get("totalDelay") == 12, str(data))
+    check("旧接口字段结构保持",
+          set(data.keys()) == {"status", "totalDelay", "paths"})
+    status, html = get(base_url, "/")
+    check("旧页面草稿与提交流程保持",
+          all(k in html for k in
+              ["SAMPLE", "/api/protected-paths", "提交求解", "添加光纤段"]))
+
 
 
 def main() -> int:
@@ -316,6 +621,10 @@ def main() -> int:
     verify_cut_evidence(args.base_url)
     verify_error_cases(args.base_url)
     verify_parallel_and_page(args.base_url)
+    verify_recheck_symmetry(args.base_url)
+    verify_recheck_greedy_counterexample(args.base_url)
+    verify_recheck_errors(args.base_url)
+    verify_old_api_regression(args.base_url)
 
     print("\n" + "=" * 60)
     if failures:
